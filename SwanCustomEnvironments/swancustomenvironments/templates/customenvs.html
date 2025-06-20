@@ -84,20 +84,29 @@ data-base-url="{{base_url | urlencode}}"
         return xsrf ? { 'X-XSRFToken': xsrf[1] } : {};
     };
 
+    // Preserve all the possible form arguments previously specified
+    const reconstruct_original_url = (params) => {
+        return `?changeconfig&software_source=customenv` +
+       `&builder=${params.builder}:${params.builder_version}` +
+       `&repository=${params.repo}` +
+       `${params.nxcals ? '&clusters=hadoop-nxcals' : ''}` +
+       `&file=${file.substring(1)}`;
+    };
+
     // Function to trigger a visual error in the loader
-    const trigger_visual_error = (message) => {
+    const trigger_visual_error = (message, params) => {
         const backButton = document.getElementById('back-button');
         const loader = document.getElementById('swan-loader');
 
         loader.getElementsByClassName('loader-line-mask')[0].style.display = 'none';
         loader.getElementsByClassName('text')[0].innerHTML = 'Error creating environment';
-        backButton.onclick = () => window.location = '/hub/home?changeconfig';
+        backButton.onclick = () => window.location = `/hub/home${reconstruct_original_url(params)}`;
         backButton.style.display = 'block';
         console.error(message);
     };
 
     // Function to process each chunk of data iteratively
-    async function render_data_chunks(reader, decoder) {
+    async function render_data_chunks(reader, decoder, params) {
         try {
             // Read chunks until the stream is done
             while (true) {
@@ -107,7 +116,7 @@ data-base-url="{{base_url | urlencode}}"
                 // Exit the loop if no more data is available
                 if (done) {
                     // Output has errors -> change title and show button for going back to spawner
-                    if (has_failed) trigger_visual_error("Environment creation failed");
+                    if (has_failed) trigger_visual_error("Environment creation failed", params);
 
                     // Output is fine -> Redirect to JupyterLab
                     else window.location = base_url + "lab" + project_path;
@@ -136,7 +145,7 @@ data-base-url="{{base_url | urlencode}}"
                 });
             }
         } catch (error) {
-            trigger_visual_error(`Error reading stream: ${error}`);
+            trigger_visual_error(`Error reading stream: ${error}`, params);
         }
     }
 
@@ -146,7 +155,7 @@ data-base-url="{{base_url | urlencode}}"
         headers: get_jh_auth_header()
     })
     .then(response => response.ok ? response.body.getReader() : Promise.reject(response.statusText))
-    .then(reader => render_data_chunks(reader, new TextDecoder("utf-8")))
-    .catch(error => trigger_visual_error(`Error fetching stream: ${error}`));
+    .then(reader => render_data_chunks(reader, new TextDecoder("utf-8"), params))
+    .catch(error => trigger_visual_error(`Error fetching stream: ${error}`, params));
 </script>
 {% endblock %}
