@@ -11,6 +11,15 @@ from subprocess import Popen
 from os import path
 
 
+# Interval in seconds between keepalive lines sent to the client when the
+# process produces no output. Must be well below any proxy idle-timeout
+# (nginx default: 60s). 5s gives a comfortable margin.
+KEEPALIVE_INTERVAL = 5
+
+# Sentinel written to the stream; the frontend filters it out before display.
+KEEPALIVE_LINE = "# keepalive\n"
+
+
 class SwanCustomEnvironmentsApiHandler(APIHandler):
     """API handler for creating custom environments"""
 
@@ -32,6 +41,10 @@ class SwanCustomEnvironmentsApiHandler(APIHandler):
         nxcals (bool): Whether to include NXCALS and Spark extensions in the environment.
         """
         self.set_header("Content-Type", "text/event-stream")
+        # Disable nginx proxy buffering so every flush reaches the client immediately.
+        self.set_header("X-Accel-Buffering", "no")
+        self.set_header("Cache-Control", "no-cache")
+
         makenv_process = SwanCustomEnvironmentsApiHandler.makenv_process
         
         if makenv_process is None:
@@ -59,12 +72,28 @@ class SwanCustomEnvironmentsApiHandler(APIHandler):
 
     async def _process_log_stream(self, makenv_process: Popen) -> None:
         """Reads from the log file and streams output to the client."""
+        idle_seconds = 0.0
+
         with open(self.LOG_FILE, "r") as log_file:
             while True:
                 line = log_file.readline()
-                if not line and makenv_process.poll() is not None:
-                    break  # Process finished, no more logs to read
-                await self._send_line(line)
+
+                if line:
+                    # Real output arrived — reset the idle counter and send it.
+                    idle_seconds = 0.0
+                    await self._send_line(line)
+                else:
+                    if makenv_process.poll() is not None:
+                        # Process has exited and there is nothing left to read.
+                        break
+
+                    # No output yet — sleep briefly, then check again.
+                    await sleep(0.5)
+                    idle_seconds += 0.5
+
+                    if idle_seconds >= KEEPALIVE_INTERVAL:
+                        idle_seconds = 0.0
+                        await self._send_line(KEEPALIVE_LINE)
 
     async def _send_line(self, line: str) -> None:
         """Sends a line to the client"""
